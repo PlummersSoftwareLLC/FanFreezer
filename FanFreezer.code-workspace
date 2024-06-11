@@ -1,0 +1,15 @@
+{
+	"folders": [
+		{
+			"name": "FanFreezer",
+			"path": "."
+		}
+	],
+	"settings": {
+		"files.associations": {
+			"iomanip": "cpp",
+			"chrono": "cpp",
+			"initializer_list": "cpp"
+		}
+	}
+}
