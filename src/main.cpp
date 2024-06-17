@@ -5,21 +5,12 @@
 #include <FastLED.h>
 #include <algorithm>               // For std::clamp
 #include <driver/ledc.h>           // For LEDC PWM
+#include <bounce2.h>               // For debounced button
 
 #define ADC1_CHANNEL (ADC1_CHANNEL_0)  // GPIO36 if ADC1 channel 0
-
-#define DEFAULT_RPM  1500
-
-// Define the pin where the TACH signal is connected
 #define TACH_PIN   2
 #define PWM_PIN    4
-
-const int pwmPin = 2;
-
-esp_adc_cal_characteristics_t *adc_chars;
-
-unsigned long lastMillis = -1000000;
-const unsigned long interval = 100000; // 1 second
+#define BUTTON_PIN 0
 
 #define NUM_LEDS 32
 #define DATA_PIN 5
@@ -27,8 +18,12 @@ const unsigned long interval = 100000; // 1 second
 CRGB leds[NUM_LEDS];
 hw_timer_t *timer = NULL;
 volatile bool updateLEDs = false;  // Flag to indicate LED update
+Bounce2::Button button;
 
-void IRAM_ATTR onTimer() {
+esp_adc_cal_characteristics_t *adc_chars;
+
+void IRAM_ATTR onTimer() 
+{
     // Set the flag to update LEDs
     updateLEDs = true;
 }
@@ -38,8 +33,7 @@ float mapValue(float x, float in_min, float in_max, float out_min, float out_max
     return (x - in_min) * (out_max - out_min) / (in_max - in_min) + out_min;
 }
 
-
-void UpdateTimers(uint millivolts, float scaler)
+void UpdateTimers(uint millivolts)
 {
       // Measure the pulse width in microseconds
       unsigned long highTime = pulseIn(TACH_PIN, HIGH);
@@ -50,14 +44,13 @@ void UpdateTimers(uint millivolts, float scaler)
 
       // Calculate the frequency
       float frequency = 0;
-      if (period > 0) {
+      if (period > 0) 
         frequency = 1000000.0 / period; // Frequency in Hz
-      }
-
-      frequency = 50.0f;
+      
+      Serial.printf("Frequency: %.2f Hz\n", frequency);
 
       // Calculate the RPM
-      float rpm = frequency * 60 * scaler;
+      float rpm = frequency * 60 / 2;
       
       // Calculate the strobe frequency
       float strobe_frequency = rpm * 9.0 / 60.0; // Convert to Hz
@@ -71,9 +64,27 @@ void UpdateTimers(uint millivolts, float scaler)
       }
       Heltec.display->clear();
       Heltec.display->drawString(0, 0, "Pulse Frequency (Hz):");
-      Heltec.display->drawString(0, 10, String("RPM: ") + String(rpm, 0) + String("Scaler: ") + String(scaler, 2));
+      Heltec.display->drawString(0, 10, String("RPM: ") + String(rpm, 0));
       Heltec.display->drawString(0, 40, String(millivolts));
       Heltec.display->display();       
+}
+
+void onButtonPressed(Bounce &btn) 
+{
+    // Read the raw ADC value from the potentiometer
+    int rawValue = adc1_get_raw(ADC1_CHANNEL);
+
+    // Convert the raw ADC value to millivolts
+    uint32_t mv = esp_adc_cal_raw_to_voltage(rawValue, adc_chars);
+    float millivolts = mv / 1000.0f;
+
+    // Clamp the millivolts value
+    millivolts = std::min(millivolts, 3.12f);
+    millivolts = std::max(millivolts, 0.0f);
+    float scaler = millivolts / 3.12f;
+    scaler = mapValue(scaler, 0.0f, 1.0f, 0.4f, 0.5f);
+
+    UpdateTimers(millivolts);
 }
 
 void setup() 
@@ -106,38 +117,20 @@ void setup()
   timerAttachInterrupt(timer, &onTimer, true);
 
   // Setup LEDC for PWM on GPIO4
-  ledcSetup(0, 20, 8);    // Channel 0, 20 Hz, 8-bit resolution
+  ledcSetup(0, 20000, 8);    // Channel 0, 20 Hz, 8-bit resolution
   ledcAttachPin(PWM_PIN, 0); // Attach PWM to GPIO4 on channel 0
-  ledcWrite(0, 128);      // 50% duty cycle (128 out of 255)
+  ledcWrite(0, 1);      // 50% duty cycle (128 out of 255)
 
-  UpdateTimers(0, 0.172);  
+  // Initialize button
+  button.attach(BUTTON_PIN, INPUT_PULLUP);
+  button.interval(5);
 }
 
 void loop() 
 {
-     // Read the raw ADC value from the potentiometer
-    int rawValue = adc1_get_raw(ADC1_CHANNEL);
-
-    // Convert the raw ADC value to millivolts
-    uint32_t mv = esp_adc_cal_raw_to_voltage(rawValue, adc_chars);
-    float millivolts = mv / 1000.0f;
-
-    // Clamp the millivolts value
-    millivolts = std::min(millivolts, 3.12f);
-    millivolts = std::max(millivolts, 0.0f);
-    float scaler = millivolts / 3.12f;
-    scaler = mapValue(scaler, 0.0f, 1.0f, 0.12f, 1.0f);
-
-    static unsigned long lastMillis = 0;
-    unsigned long currentMillis = millis();
-
-  /*
-    if (currentMillis - lastMillis >= interval) 
-    {
-      lastMillis = currentMillis;
-      UpdateTimers(millivolts, scaler);
-    }
-   */
+  button.update();
+  if (button.pressed())
+    onButtonPressed(button);
 
   // Check if it's time to update the LEDs
   if (updateLEDs) 
